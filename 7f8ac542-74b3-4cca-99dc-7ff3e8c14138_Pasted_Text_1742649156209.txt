@@ -1,0 +1,1124 @@
+import pandas as pd
+import numpy as np
+import talib
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+from untrade.client import Client
+import itertools
+class BlendedCryptoTrader:
+    def __init__(self, data_path, test_percentage=0.4):
+        """
+        Advanced trading algorithm blending multiple proven BTC/USD strategies.
+        
+        Parameters:
+        - data_path (str): Path to the price data CSV file
+        - test_percentage (float): Percentage of data to use for testing (0.0-1.0)
+        """
+        self.data_path = data_path
+        self.test_percentage = test_percentage
+        self.df = None
+        self.strategy_weights = {
+            'trend_following': 1.0,
+            'mean_reversion': 1.0,
+            'volume_based': 1.0,
+            'volatility_based': 1.0,
+            'whale_activity': 1.0
+        }
+        # Separate weights for long and short signals
+        self.long_weights = {
+            'macd': 1.2,
+            'ema_cross': 1.3,
+            'bull_div': 1.5,
+            'support_bounce': 1.4,
+            'volume_surge': 1.2
+        }
+        self.short_weights = {
+            'bearish_div': 1.5,
+            'resistance_reject': 1.4,
+            'volatility_expansion': 1.3,
+            'volume_climax': 1.2,
+            'supertrend': 1.4
+        }
+        
+    def load_data(self):
+        """Load and prepare price data."""
+        # Load raw data
+        df = pd.read_csv(self.data_path)
+        
+        # Check required columns
+        required_cols = ['datetime', 'open', 'high', 'low', 'close', 'volume']
+        for col in required_cols:
+            if col not in df.columns:
+                raise ValueError(f"Required column '{col}' not found in data")
+        
+        # Convert datetime and set as index
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.set_index('datetime')
+        
+        # Calculate technical indicators from multiple strategies
+        self._calculate_indicators(df)
+        
+        self.df = df
+        return df
+    
+    def _calculate_indicators(self, df):
+        """Calculate comprehensive set of technical indicators."""
+        # --- Trend Following Indicators ---
+        
+        # EMAs (Multiple timeframes)
+        for period in [8, 13, 21, 34, 55, 89, 144, 200]:
+            df[f'ema_{period}'] = self._calculate_ema(df['close'], period)
+        
+        # MACD
+        df['macd'], df['macd_signal'], df['macd_hist'] = self._calculate_macd(df['close'])
+        
+        # ADX (Trend Strength)
+        df['adx'] = self._calculate_adx(df, 14)
+        
+        # Supertrend (10, 3)
+        df['supertrend'], df['supertrend_direction'] = self._calculate_supertrend(df, 10, 3)
+        
+        # Ichimoku Cloud
+        self._calculate_ichimoku(df)
+        
+        # --- Mean Reversion Indicators ---
+        
+        # RSI with multiple timeframes
+        for period in [6, 14, 21]:
+            df[f'rsi_{period}'] = self._calculate_rsi(df['close'], period)
+        
+        # Stochastic Oscillator
+        df['stoch_k'], df['stoch_d'] = self._calculate_stochastic(df)
+        
+        # Bollinger Bands
+        for period in [20, 50]:
+            middle, upper, lower = self._calculate_bollinger_bands(df['close'], period)
+            df[f'bb_middle_{period}'] = middle
+            df[f'bb_upper_{period}'] = upper
+            df[f'bb_lower_{period}'] = lower
+            # Distance from price to bands (normalized)
+            df[f'bb_pct_{period}'] = (df['close'] - lower) / (upper - lower)
+        
+        # --- Volume-Based Indicators ---
+        
+        # On-Balance Volume
+        df['obv'] = self._calculate_obv(df)
+        
+        # Volume EMAs
+        for period in [10, 20, 50]:
+            df[f'volume_ema_{period}'] = self._calculate_ema(df['volume'], period)
+        
+        # Volume RSI
+        df['volume_rsi'] = self._calculate_rsi(df['volume'], 14)
+        
+        # Chaikin Money Flow
+        df['cmf'] = self._calculate_cmf(df, 20)
+        
+        # Volume Zone Oscillator
+        df['vzo'] = self._calculate_vzo(df, 14, 28)
+        
+        # --- Volatility-Based Indicators ---
+        
+        # ATR for multiple periods
+        for period in [5, 14, 21]:
+            df[f'atr_{period}'] = self._calculate_atr(df, period)
+        
+        # Keltner Channels
+        self._calculate_keltner_channels(df, 20, 2)
+        
+        # Historical Volatility
+        df['historical_vol'] = df['close'].pct_change().rolling(20).std() * np.sqrt(365)
+        
+        # --- Pattern Recognition ---
+        
+        # Detect support/resistance levels
+        self._identify_support_resistance(df, window=10)
+        
+        # Divergences (RSI)
+        self._calculate_divergences(df)
+        
+        # --- Combined Signals ---
+        
+        # Hull Moving Average
+        df['hma_50'] = self._calculate_hull_ma(df['close'], 50)
+        
+        # Squeeze Momentum Indicator
+        self._calculate_squeeze_momentum(df)
+        
+        # Elder Ray Index
+        self._calculate_elder_ray(df)
+        
+        # Wavetrend Oscillator
+        self._calculate_wavetrend(df)
+        
+        return df
+    
+    # --- Indicator Calculation Methods ---
+    
+    def _calculate_ema(self, series, period):
+        """Calculate Exponential Moving Average."""
+        return series.ewm(span=period, adjust=False).mean()
+    
+    def _calculate_macd(self, series, fast=12, slow=26, signal=9):
+        """Calculate MACD, Signal and Histogram."""
+        fast_ema = self._calculate_ema(series, fast)
+        slow_ema = self._calculate_ema(series, slow)
+        macd = fast_ema - slow_ema
+        macd_signal = self._calculate_ema(macd, signal)
+        macd_hist = macd - macd_signal
+        return macd, macd_signal, macd_hist
+    
+    def _calculate_adx(self, df, period=14):
+        """Calculate Average Directional Index."""
+        # Implementation using rolling calculations
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        # True Range
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+        
+        # Plus Directional Movement
+        plus_dm = high - high.shift()
+        minus_dm = low.shift() - low
+        plus_dm = plus_dm.where((plus_dm > 0) & (plus_dm > minus_dm), 0)
+        
+        # Minus Directional Movement
+        minus_dm = minus_dm.where((minus_dm > 0) & (minus_dm > plus_dm), 0)
+        
+        # Smoothed Directional Movement
+        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+        
+        # Directional Movement Index
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, 1)
+        
+        # Average Directional Index
+        adx = dx.rolling(period).mean()
+        
+        return adx
+    
+    def _calculate_supertrend(self, df, period=10, multiplier=3):
+        """Calculate SuperTrend indicator."""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        # Calculate ATR
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+        
+        # Calculate SuperTrend
+        upperband = (high + low) / 2 + multiplier * atr
+        lowerband = (high + low) / 2 - multiplier * atr
+        
+        supertrend = pd.Series(0.0, index=df.index)
+        direction = pd.Series(1, index=df.index)  # 1 for uptrend, -1 for downtrend
+        
+        for i in range(1, len(df)):
+            if close.iloc[i] > upperband.iloc[i-1]:
+                direction.iloc[i] = 1
+            elif close.iloc[i] < lowerband.iloc[i-1]:
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = direction.iloc[i-1]
+                
+                if direction.iloc[i] == 1 and lowerband.iloc[i] < lowerband.iloc[i-1]:
+                    lowerband.iloc[i] = lowerband.iloc[i-1]
+                if direction.iloc[i] == -1 and upperband.iloc[i] > upperband.iloc[i-1]:
+                    upperband.iloc[i] = upperband.iloc[i-1]
+            
+            if direction.iloc[i] == 1:
+                supertrend.iloc[i] = lowerband.iloc[i]
+            else:
+                supertrend.iloc[i] = upperband.iloc[i]
+        
+        return supertrend, direction
+    
+    def _calculate_ichimoku(self, df):
+        """Calculate Ichimoku Cloud components."""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        # Tenkan-sen (Conversion Line): (9-period high + 9-period low) / 2
+        nine_period_high = high.rolling(window=9).max()
+        nine_period_low = low.rolling(window=9).min()
+        df['tenkan_sen'] = (nine_period_high + nine_period_low) / 2
+        
+        # Kijun-sen (Base Line): (26-period high + 26-period low) / 2
+        period26_high = high.rolling(window=26).max()
+        period26_low = low.rolling(window=26).min()
+        df['kijun_sen'] = (period26_high + period26_low) / 2
+        
+        # Senkou Span A (Leading Span A): (Conversion Line + Base Line) / 2
+        df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
+        
+        # Senkou Span B (Leading Span B): (52-period high + 52-period low) / 2
+        period52_high = high.rolling(window=52).max()
+        period52_low = low.rolling(window=52).min()
+        df['senkou_span_b'] = ((period52_high + period52_low) / 2).shift(26)
+        
+        # Chikou Span (Lagging Span): Close price shifted back 26 periods
+        df['chikou_span'] = close.shift(-26)
+        
+    def _calculate_rsi(self, series, period=14, epsilon=1e-10):
+        """Calculate RSI with error handling."""
+        delta = series.diff()
+        
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        
+        avg_gain = up.rolling(window=period).mean()
+        avg_loss = down.rolling(window=period).mean()
+        
+        rs = avg_gain / (avg_loss + epsilon)
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+    
+    def _calculate_stochastic(self, df, k_period=14, d_period=3, epsilon=1e-10):
+        """Calculate Stochastic Oscillator."""
+        high_roll = df['high'].rolling(window=k_period).max()
+        low_roll = df['low'].rolling(window=k_period).min()
+        
+        denom = (high_roll - low_roll).replace(0, epsilon)
+        
+        # Fast %K
+        k = 100 * (df['close'] - low_roll) / denom
+        # Slow %K (Fast %D)
+        d = k.rolling(window=d_period).mean()
+        
+        return k, d
+    
+    def _calculate_bollinger_bands(self, series, period=20, num_std=2):
+        """Calculate Bollinger Bands."""
+        middle = series.rolling(window=period).mean()
+        std = series.rolling(window=period).std()
+        
+        upper = middle + (std * num_std)
+        lower = middle - (std * num_std)
+        
+        return middle, upper, lower
+    
+    def _calculate_obv(self, df):
+        """Calculate On-Balance Volume."""
+        obv = pd.Series(index=df.index)
+        obv.iloc[0] = df['volume'].iloc[0]
+        
+        for i in range(1, len(df)):
+            if df['close'].iloc[i] > df['close'].iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] + df['volume'].iloc[i]
+            elif df['close'].iloc[i] < df['close'].iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] - df['volume'].iloc[i]
+            else:
+                obv.iloc[i] = obv.iloc[i-1]
+        
+        return obv
+    
+    def _calculate_cmf(self, df, period=20):
+        """Calculate Chaikin Money Flow."""
+        money_flow_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (df['high'] - df['low']).replace(0, 1)
+        money_flow_volume = money_flow_multiplier * df['volume']
+        cmf = money_flow_volume.rolling(period).sum() / df['volume'].rolling(period).sum()
+        return cmf
+    
+    def _calculate_vzo(self, df, short_period=14, long_period=28):
+        """Calculate Volume Zone Oscillator."""
+        short_vol_ema = self._calculate_ema(df['volume'], short_period)
+        long_vol_ema = self._calculate_ema(df['volume'], long_period)
+        
+        vzo = 100 * (short_vol_ema - long_vol_ema) / long_vol_ema
+        return vzo
+    
+    def _calculate_atr(self, df, period=14):
+        """Calculate Average True Range."""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        atr = tr.rolling(window=period).mean()
+        return atr
+    
+    def _calculate_keltner_channels(self, df, period=20, multiplier=2):
+        """Calculate Keltner Channels."""
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        ema = self._calculate_ema(typical_price, period)
+        atr = self._calculate_atr(df, period)
+        
+        df['keltner_middle'] = ema
+        df['keltner_upper'] = ema + (multiplier * atr)
+        df['keltner_lower'] = ema - (multiplier * atr)
+        
+    def _identify_support_resistance(self, df, window=10):
+        """Identify support and resistance zones."""
+        # Rolling max/min for potential levels
+        df['potential_resistance'] = df['high'].rolling(window=window, center=True).max()
+        df['potential_support'] = df['low'].rolling(window=window, center=True).min()
+        
+        # Check if current level is near support/resistance
+        resistance_threshold = 0.005  # 0.5% from resistance
+        support_threshold = 0.005  # 0.5% from support
+        
+        df['near_resistance'] = (df['high'] >= df['potential_resistance'] * (1 - resistance_threshold)) & \
+                               (df['high'] <= df['potential_resistance'] * (1 + resistance_threshold))
+                               
+        df['near_support'] = (df['low'] <= df['potential_support'] * (1 + support_threshold)) & \
+                            (df['low'] >= df['potential_support'] * (1 - support_threshold))
+                            
+        # Detect bounces and rejections
+        df['support_bounce'] = (df['near_support']) & (df['close'] > df['open']) & (df['low'] < df['open'])
+        df['resistance_reject'] = (df['near_resistance']) & (df['close'] < df['open']) & (df['high'] > df['open'])
+        
+    def _calculate_divergences(self, df):
+        """Detect RSI divergences from price."""
+        # Use 14-period RSI
+        rsi = df['rsi_14']
+        close = df['close']
+        
+        # Simple divergence detection
+        def find_local_extrema(series, window=5):
+            # Find local maxima
+            maxima = (series.rolling(window=window, center=True).max() == series) & \
+                     (series != series.shift(1))
+            
+            # Find local minima
+            minima = (series.rolling(window=window, center=True).min() == series) & \
+                     (series != series.shift(1))
+                     
+            return maxima, minima
+        
+        # Find price and RSI extrema
+        price_maxima, price_minima = find_local_extrema(close)
+        rsi_maxima, rsi_minima = find_local_extrema(rsi)
+        
+        # Initialize divergence columns
+        df['bull_div'] = False
+        df['bear_div'] = False
+        
+        # Check for bullish divergence (price making lower lows, RSI making higher lows)
+        for i in range(2, len(df)):
+            if price_minima.iloc[i] and i >= 2:
+                # Look back for another recent minima
+                for j in range(i-1, max(0, i-10), -1):
+                    if price_minima.iloc[j]:
+                        # We found two price minima
+                        if (close.iloc[i] < close.iloc[j]) and (rsi.iloc[i] > rsi.iloc[j]):
+                            # Bullish divergence detected
+                            df['bull_div'].iloc[i] = True
+                        break
+        
+        # Check for bearish divergence (price making higher highs, RSI making lower highs)
+        for i in range(2, len(df)):
+            if price_maxima.iloc[i] and i >= 2:
+                # Look back for another recent maxima
+                for j in range(i-1, max(0, i-10), -1):
+                    if price_maxima.iloc[j]:
+                        # We found two price maxima
+                        if (close.iloc[i] > close.iloc[j]) and (rsi.iloc[i] < rsi.iloc[j]):
+                            # Bearish divergence detected
+                            df['bear_div'].iloc[i] = True
+                        break
+    
+    def _calculate_hull_ma(self, series, period):
+        """Calculate Hull Moving Average."""
+        half_period = int(period / 2)
+        sqrt_period = int(np.sqrt(period))
+        
+        wma1 = series.rolling(window=half_period).apply(lambda x: np.average(x, weights=np.arange(1, len(x) + 1)))
+        wma2 = series.rolling(window=period).apply(lambda x: np.average(x, weights=np.arange(1, len(x) + 1)))
+        
+        hull = 2 * wma1 - wma2
+        hma = hull.rolling(window=sqrt_period).apply(lambda x: np.average(x, weights=np.arange(1, len(x) + 1)))
+        
+        return hma
+    
+    def _calculate_squeeze_momentum(self, df):
+        """Calculate Squeeze Momentum Indicator (Lazybear version)."""
+        # Calculate Bollinger Bands
+        basis = df['close'].rolling(window=20).mean()
+        dev = 2 * df['close'].rolling(window=20).std()
+        
+        # Upper and Lower Bollinger Bands
+        df['upper_bb'] = basis + dev
+        df['lower_bb'] = basis - dev
+        
+        # Calculate Keltner Channels
+        atr = self._calculate_atr(df, 20)
+        df['upper_kc'] = basis + (1.5 * atr)
+        df['lower_kc'] = basis - (1.5 * atr)
+        
+        # Determine if market is in a squeeze (Bollinger Bands inside Keltner Channels)
+        df['squeeze_on'] = (df['lower_bb'] > df['lower_kc']) & (df['upper_bb'] < df['upper_kc'])
+        
+        # Calculate momentum value
+        highest = df['high'].rolling(window=20).max()
+        lowest = df['low'].rolling(window=20).min()
+        mid = (highest + lowest) / 2
+        
+        df['squeeze_mom'] = (df['close'] - mid) / df['close']
+    
+    def _calculate_elder_ray(self, df):
+        """Calculate Elder Ray Index."""
+        # 13-period EMA
+        ema13 = self._calculate_ema(df['close'], 13)
+        
+        # Bull Power and Bear Power
+        df['bull_power'] = df['high'] - ema13
+        df['bear_power'] = df['low'] - ema13
+    
+    def _calculate_wavetrend(self, df, channel_length=10, avg_length=21):
+        """Calculate WaveTrend Oscillator."""
+        # Calculate the HLC/3 price
+        hlc3 = (df['high'] + df['low'] + df['close']) / 3
+        
+        # Calculate Average and Esa
+        esa = self._calculate_ema(hlc3, channel_length)
+        
+        # Calculate the absolute difference
+        d = self._calculate_ema(abs(hlc3 - esa), channel_length)
+        
+        # Avoid division by zero
+        d = d.replace(0, 0.0001)
+        
+        # Calculate ci
+        ci = (hlc3 - esa) / (0.015 * d)
+        
+        # Calculate the WaveTrend oscillator
+        df['wt1'] = self._calculate_ema(ci, avg_length)
+        df['wt2'] = self._calculate_ema(df['wt1'], 4)
+    
+    def generate_signals(self):
+        """Generate trading signals using blended strategy approach."""
+        if self.df is None:
+            self.load_data()
+            
+        # Clean data by removing NaN values
+        clean_df = self.df.dropna()
+        
+        # Determine test section
+        split_idx = int(len(clean_df) * (1 - self.test_percentage))
+        test_df = clean_df.iloc[split_idx:].copy()
+        
+        # Calculate long signals (specialized for buys)
+        test_df['long_signal'] = self._calculate_long_signals(test_df)
+        
+        # Calculate short signals (specialized for sells)
+        test_df['short_signal'] = self._calculate_short_signals(test_df)
+        
+        # Combine signals with preference for the stronger signal
+        test_df['Signal'] = np.where(
+            test_df['long_signal'] > abs(test_df['short_signal']), 
+            1, 
+            np.where(abs(test_df['short_signal']) > test_df['long_signal'], -1, 0)
+        )
+        
+        # No-trade zone when signals are weak or conflicting
+        weak_signal_threshold = 0.3
+        test_df.loc[(test_df['long_signal'] < weak_signal_threshold) & 
+                   (abs(test_df['short_signal']) < weak_signal_threshold), 'Signal'] = 0
+        
+        # Apply signal filtering to avoid excessive trading
+        test_df = self._filter_signals(test_df)
+        
+        return test_df
+    
+    def _calculate_long_signals(self, df):
+        """Calculate long (buy) signal strength using specialized metrics."""
+        long_signals = pd.Series(0.0, index=df.index)
+        
+        # MACD crosses above signal line (weighted)
+        macd_signal = ((df['macd'] > df['macd_signal']) & 
+                       (df['macd'].shift(1) <= df['macd_signal'].shift(1))) * self.long_weights['macd']
+        
+        # EMA crossovers (8 crosses above 21)
+        ema_cross = ((df['ema_8'] > df['ema_21']) & 
+                     (df['ema_8'].shift(1) <= df['ema_21'].shift(1))) * self.long_weights['ema_cross']
+        
+        # Bullish RSI Divergence
+        bull_div = df['bull_div'] * self.long_weights['bull_div']
+        
+        # Support bounce signal
+        support_bounce = df['support_bounce'] * self.long_weights['support_bounce']
+        
+        # Volume surge on up days
+        volume_surge = ((df['volume'] > df['volume_ema_20'] * 1.5) & 
+                        (df['close'] > df['open'])) * self.long_weights['volume_surge']
+        
+        # Additional long signals:
+        
+        # Oversold conditions with positive momentum
+        oversold_bounce = ((df['rsi_14'] < 30) & (df['rsi_14'] > df['rsi_14'].shift(1))) * 1.0
+        
+        # Price above key EMAs with rising momentum
+        trend_confirm = ((df['close'] > df['ema_55']) & 
+                         (df['ema_8'] > df['ema_8'].shift(5))) * 0.8
+        
+        # Supertrend buy signal
+        supertrend_buy = (df['supertrend_direction'] == 1) & (df['supertrend_direction'].shift(1) == -1) * 1.2
+        
+        # Ichimoku Cloud bullish signals
+        ichimoku_bull = ((df['close'] > df['senkou_span_a']) & 
+                         (df['close'] > df['senkou_span_b']) &
+                         (df['tenkan_sen'] > df['kijun_sen'])) * 0.9
+        
+        # Squeeze momentum release to upside
+        squeeze_bull = ((df['squeeze_on'].shift(1) == True) & 
+                        (df['squeeze_on'] == False) & 
+                        (df['squeeze_mom'] > 0)) * 1.1
+        
+        # WaveTrend oversold crossover
+        wavetrend_bull = ((df['wt1'] > df['wt2']) & 
+                          (df['wt1'].shift(1) <= df['wt2'].shift(1)) & 
+                          (df['wt1'] < -60)) * 1.2
+        
+        # Sum all long signals
+        long_signals = (macd_signal + ema_cross + bull_div + support_bounce + volume_surge + 
+                       oversold_bounce + trend_confirm + supertrend_buy + ichimoku_bull + 
+                       squeeze_bull + wavetrend_bull)
+        
+        # Normalize the signal (0 to 1 range)
+        max_possible = sum([w for w in self.long_weights.values()]) + 5.2  # Sum of additional weights
+        long_signals = long_signals / max_possible
+        
+        return long_signals
+    
+    def _calculate_short_signals(self, df):
+        """Calculate short (sell) signal strength using specialized metrics."""
+        short_signals = pd.Series(0.0, index=df.index)
+        
+        # Bearish divergence
+        bearish_div = df['bear_div'] * self.short_weights['bearish_div']
+        
+        # Resistance rejection
+        resistance_reject = df['resistance_reject'] * self.short_weights['resistance_reject']
+        
+        # Volatility expansion on down days
+        volatility_expansion = ((df['atr_14'] > df['atr_14'].rolling(10).mean() * 1.5) & 
+                               (df['close'] < df['open'])) * self.short_weights['volatility_expansion']
+        
+        # Volume climax at resistance
+        volume_climax = ((df['volume'] > df['volume_ema_20'] * 2.0) & 
+                         (df['close'] < df['open']) & 
+                         df['near_resistance']) * self.short_weights['volume_climax']
+        
+        # Supertrend sell signal
+        supertrend_sell = ((df['supertrend_direction'] == -1) & 
+                           (df['supertrend_direction'].shift(1) == 1)) * self.short_weights['supertrend']
+        
+        # Additional short signals:
+        
+        # Death cross (50 EMA crosses below 200 EMA)
+        death_cross = ((df['ema_55'] < df['ema_200']) & 
+                       (df['ema_55'].shift(1) >= df['ema_200'].shift(1))) * 1.3
+        
+        # Overbought conditions with negative momentum
+        overbought_reversal = ((df['rsi_14'] > 70) & 
+                              (df['rsi_14'] < df['rsi_14'].shift(1))) * 1.0
+        
+        # Break below key support levels
+        support_break = ((df['close'] < df['ema_200']) & 
+                         (df['close'].shift(1) >= df['ema_200'].shift(1))) * 1.1
+        
+        # Ichimoku Cloud bearish signals
+        ichimoku_bear = ((df['close'] < df['senkou_span_a']) & 
+                         (df['close'] < df['senkou_span_b']) &
+                         (df['tenkan_sen'] < df['kijun_sen'])) * 0.9
+        
+        # Squeeze momentum release to downside
+        # Continue from where the code was cut off
+        # Squeeze momentum release to downside
+        squeeze_bear = ((df['squeeze_on'].shift(1) == True) & 
+                        (df['squeeze_on'] == False) & 
+                        (df['squeeze_mom'] < 0)) * 1.1
+        
+        # WaveTrend overbought crossover
+        wavetrend_bear = ((df['wt1'] < df['wt2']) & 
+                          (df['wt1'].shift(1) >= df['wt2'].shift(1)) & 
+                          (df['wt1'] > 60)) * 1.2
+        
+        # Sum all short signals (negative to indicate selling direction)
+        short_signals = -1 * (bearish_div + resistance_reject + volatility_expansion + 
+                             volume_climax + supertrend_sell + death_cross + 
+                             overbought_reversal + support_break + ichimoku_bear + 
+                             squeeze_bear + wavetrend_bear)
+        
+        # Normalize the signal (-1 to 0 range)
+        max_possible = sum([w for w in self.short_weights.values()]) + 5.5  # Sum of additional weights
+        short_signals = short_signals / max_possible
+        
+        return short_signals
+    
+    def _filter_signals(self, df):
+        """Apply signal filtering to reduce noise and avoid excessive trading."""
+        filtered_df = df.copy()
+        
+        # Minimum holding period (3 periods)
+        min_hold = 3
+        
+        # Ensure minimum holding period between signal changes
+        last_signal = 0
+        last_signal_idx = 0
+        periods_held = 0
+        
+        for i in range(len(filtered_df)):
+            current_signal = filtered_df['Signal'].iloc[i]
+            
+            # Check if we need to maintain minimum holding period
+            if current_signal != last_signal and periods_held < min_hold and last_signal != 0:
+                filtered_df['Signal'].iloc[i] = last_signal
+            else:
+                # If signal changed, reset counter
+                if current_signal != last_signal:
+                    periods_held = 0
+                    last_signal = current_signal
+                    last_signal_idx = i
+                else:
+                    periods_held += 1
+        
+        # Add signal strength information
+        filtered_df['long_strength'] = filtered_df['long_signal']
+        filtered_df['short_strength'] = filtered_df['short_signal']
+        
+        return filtered_df
+    
+    def backtest(self, initial_capital=10000, position_size=0.95, disable_shorts=False):
+        """
+        Backtest the trading strategy on historical data.
+        
+        Parameters:
+        - initial_capital: Starting capital in USD
+        - position_size: Percentage of capital to use per trade (0.0-1.0)
+        - disable_shorts: If True, only long positions will be taken
+        
+        Returns:
+        - DataFrame with performance metrics and equity curve
+        """
+        signals_df = self.generate_signals()
+        
+        # Initialize backtest columns
+        signals_df['Position'] = 0
+        signals_df['BTC_Holdings'] = 0.0
+        signals_df['USD_Holdings'] = initial_capital
+        signals_df['Equity'] = initial_capital
+        signals_df['Returns'] = 0.0
+        signals_df['Cumulative_Returns'] = 1.0
+        signals_df['Drawdown'] = 0.0
+        
+        # Track trades
+        trades = []
+        current_position = 0
+        entry_price = 0
+        
+        # Loop through the signals and update positions
+        for i in range(1, len(signals_df)):
+            date = signals_df.index[i]
+            price = signals_df['close'].iloc[i]
+            signal = signals_df['Signal'].iloc[i]
+            prev_equity = signals_df['Equity'].iloc[i-1]
+            
+            # Get previous holdings
+            prev_btc = signals_df['BTC_Holdings'].iloc[i-1]
+            prev_usd = signals_df['USD_Holdings'].iloc[i-1]
+            
+            # Default to previous values
+            signals_df['BTC_Holdings'].iloc[i] = prev_btc
+            signals_df['USD_Holdings'].iloc[i] = prev_usd
+            
+            # Check for position changes
+            if signal == 1 and current_position <= 0:  # Buy/Long signal
+                # Close any existing short position
+                if current_position < 0:
+                    profit_loss = entry_price - price
+                    signals_df['USD_Holdings'].iloc[i] = prev_usd + (abs(prev_btc) * price) + (abs(prev_btc) * profit_loss)
+                    
+                    # Record the trade
+                    trades.append({
+                        'entry_date': entry_date,
+                        'exit_date': date,
+                        'entry_price': entry_price,
+                        'exit_price': price,
+                        'type': 'short',
+                        'profit_loss': profit_loss,
+                        'profit_loss_pct': profit_loss / entry_price
+                    })
+                
+                # Enter long position with position sizing
+                entry_price = price
+                entry_date = date
+                available_capital = signals_df['USD_Holdings'].iloc[i]
+                btc_to_buy = (available_capital * position_size) / price
+                
+                signals_df['BTC_Holdings'].iloc[i] = btc_to_buy
+                signals_df['USD_Holdings'].iloc[i] = available_capital - (btc_to_buy * price)
+                current_position = 1
+                
+            elif signal == -1 and current_position >= 0 and not disable_shorts:  # Sell/Short signal
+                # Close any existing long position
+                if current_position > 0:
+                    profit_loss = price - entry_price
+                    signals_df['USD_Holdings'].iloc[i] = prev_usd + (prev_btc * price)
+                    
+                    # Record the trade
+                    trades.append({
+                        'entry_date': entry_date,
+                        'exit_date': date,
+                        'entry_price': entry_price,
+                        'exit_price': price,
+                        'type': 'long',
+                        'profit_loss': profit_loss,
+                        'profit_loss_pct': profit_loss / entry_price
+                    })
+                
+                # Enter short position with position sizing
+                entry_price = price
+                entry_date = date
+                available_capital = signals_df['USD_Holdings'].iloc[i]
+                btc_to_short = (available_capital * position_size) / price
+                
+                signals_df['BTC_Holdings'].iloc[i] = -btc_to_short  # Negative for short
+                signals_df['USD_Holdings'].iloc[i] = available_capital + (btc_to_short * price)
+                current_position = -1
+                
+            elif signal == 0 and current_position != 0:  # Exit signal
+                # Close any existing position
+                if current_position > 0:  # Close long
+                    profit_loss = price - entry_price
+                    signals_df['USD_Holdings'].iloc[i] = prev_usd + (prev_btc * price)
+                    signals_df['BTC_Holdings'].iloc[i] = 0
+                    
+                    # Record the trade
+                    trades.append({
+                        'entry_date': entry_date,
+                        'exit_date': date,
+                        'entry_price': entry_price,
+                        'exit_price': price,
+                        'type': 'long',
+                        'profit_loss': profit_loss,
+                        'profit_loss_pct': profit_loss / entry_price
+                    })
+                    
+                elif current_position < 0:  # Close short
+                    profit_loss = entry_price - price
+                    signals_df['USD_Holdings'].iloc[i] = prev_usd + (abs(prev_btc) * price) + (abs(prev_btc) * profit_loss)
+                    signals_df['BTC_Holdings'].iloc[i] = 0
+                    
+                    # Record the trade
+                    trades.append({
+                        'entry_date': entry_date,
+                        'exit_date': date,
+                        'entry_price': entry_price,
+                        'exit_price': price,
+                        'type': 'short',
+                        'profit_loss': profit_loss,
+                        'profit_loss_pct': profit_loss / entry_price
+                    })
+                
+                current_position = 0
+            
+            # Calculate current equity (USD + BTC value)
+            btc_value = signals_df['BTC_Holdings'].iloc[i] * price
+            signals_df['Equity'].iloc[i] = signals_df['USD_Holdings'].iloc[i] + abs(btc_value)
+            
+            # Calculate returns
+            signals_df['Returns'].iloc[i] = signals_df['Equity'].iloc[i] / prev_equity - 1
+            signals_df['Cumulative_Returns'].iloc[i] = signals_df['Cumulative_Returns'].iloc[i-1] * (1 + signals_df['Returns'].iloc[i])
+            
+            # Calculate drawdown
+            peak = signals_df['Equity'].iloc[:i+1].max()
+            signals_df['Drawdown'].iloc[i] = (signals_df['Equity'].iloc[i] - peak) / peak
+        
+        # Calculate performance metrics
+        performance = self._calculate_performance_metrics(signals_df, trades)
+        
+        return signals_df, trades, performance
+    
+    def _calculate_performance_metrics(self, df, trades):
+        """Calculate comprehensive performance metrics."""
+        # Basic performance
+        total_return = df['Equity'].iloc[-1] / df['Equity'].iloc[0] - 1
+        
+        # Annualized return (assuming daily data)
+        days = (df.index[-1] - df.index[0]).days
+        years = days / 365
+        annualized_return = (1 + total_return) ** (1 / max(years, 0.01)) - 1
+        
+        # Risk metrics
+        daily_returns = df['Returns']
+        volatility = daily_returns.std() * np.sqrt(252)  # Annualized volatility
+        max_drawdown = df['Drawdown'].min()
+        
+        # Sharpe ratio (assuming risk-free rate of 0.02)
+        risk_free_rate = 0.02
+        sharpe_ratio = (annualized_return - risk_free_rate) / max(volatility, 0.0001)
+        
+        # Sortino ratio (downside deviation)
+        negative_returns = daily_returns[daily_returns < 0]
+        downside_deviation = negative_returns.std() * np.sqrt(252)
+        sortino_ratio = (annualized_return - risk_free_rate) / max(downside_deviation, 0.0001)
+        
+        # Trade metrics
+        num_trades = len(trades)
+        if num_trades > 0:
+            wins = sum(1 for t in trades if t['profit_loss'] > 0)
+            losses = num_trades - wins
+            win_rate = wins / num_trades
+            
+            # Average profit/loss
+            avg_profit = np.mean([t['profit_loss_pct'] for t in trades if t['profit_loss'] > 0]) if wins > 0 else 0
+            avg_loss = np.mean([t['profit_loss_pct'] for t in trades if t['profit_loss'] <= 0]) if losses > 0 else 0
+            
+            # Profit factor
+            total_profit = sum([t['profit_loss'] for t in trades if t['profit_loss'] > 0])
+            total_loss = abs(sum([t['profit_loss'] for t in trades if t['profit_loss'] <= 0]))
+            profit_factor = total_profit / max(total_loss, 0.0001)
+            
+            # Maximum consecutive wins/losses
+            results = [1 if t['profit_loss'] > 0 else 0 for t in trades]
+            max_consecutive_wins = max(sum(1 for _ in group) for key, group in itertools.groupby(results) if key == 1) if wins > 0 else 0
+            max_consecutive_losses = max(sum(1 for _ in group) for key, group in itertools.groupby(results) if key == 0) if losses > 0 else 0
+        else:
+            win_rate = 0
+            avg_profit = 0
+            avg_loss = 0
+            profit_factor = 0
+            max_consecutive_wins = 0
+            max_consecutive_losses = 0
+        
+        return {
+            'total_return': total_return,
+            'annualized_return': annualized_return,
+            'volatility': volatility,
+            'max_drawdown': max_drawdown,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'num_trades': num_trades,
+            'win_rate': win_rate,
+            'avg_profit': avg_profit,
+            'avg_loss': avg_loss,
+            'profit_factor': profit_factor,
+            'max_consecutive_wins': max_consecutive_wins,
+            'max_consecutive_losses': max_consecutive_losses
+        }
+    
+    def optimize_weights(self, param_grid=None, initial_capital=10000, position_size=0.95):
+        """
+        Optimize strategy weights using grid search.
+        
+        Parameters:
+        - param_grid: Dictionary of parameters to grid search
+        - initial_capital: Starting capital
+        - position_size: Position size as fraction of capital
+        
+        Returns:
+        - Best parameters and performance metrics
+        """
+        if param_grid is None:
+            # Default grid search parameters
+            param_grid = {
+                'trend_following': [0.8, 1.0, 1.2],
+                'mean_reversion': [0.8, 1.0, 1.2],
+                'volume_based': [0.8, 1.0, 1.2],
+                'volatility_based': [0.8, 1.0, 1.2],
+                'whale_activity': [0.8, 1.0, 1.2]
+            }
+        
+        # Generate all combinations
+        import itertools
+        keys = param_grid.keys()
+        values = param_grid.values()
+        combinations = list(itertools.product(*values))
+        
+        # Track best performance
+        best_sharpe = -np.inf
+        best_params = None
+        best_performance = None
+        
+        # Loop through combinations
+        for combo in combinations:
+            # Update weights
+            for i, key in enumerate(keys):
+                self.strategy_weights[key] = combo[i]
+            
+            # Run backtest
+            try:
+                _, _, performance = self.backtest(initial_capital, position_size)
+                
+                # Check if better than current best
+                if performance['sharpe_ratio'] > best_sharpe:
+                    best_sharpe = performance['sharpe_ratio']
+                    best_params = self.strategy_weights.copy()
+                    best_performance = performance
+            except Exception as e:
+                print(f"Error with parameters {combo}: {str(e)}")
+                continue
+        
+        # Reset to best weights
+        self.strategy_weights = best_params
+        
+        return best_params, best_performance
+    
+    def plot_results(self, results_df):
+        """
+        Plot trading strategy results.
+        
+        Parameters:
+        - results_df: DataFrame from backtest() method
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+            
+            # Set up the figure
+            fig, axes = plt.subplots(3, 1, figsize=(15, 15), gridspec_kw={'height_ratios': [3, 1, 1]})
+            
+            # Plot price and equity curve
+            ax1 = axes[0]
+            ax1.plot(results_df.index, results_df['close'], color='black', alpha=0.6, label='BTC/USD')
+            ax1.set_ylabel('BTC/USD Price', color='black')
+            ax1.tick_params(axis='y', labelcolor='black')
+            
+            # Add equity curve on right axis
+            ax1_twin = ax1.twinx()
+            ax1_twin.plot(results_df.index, results_df['Equity'], color='green', label='Equity')
+            ax1_twin.set_ylabel('Portfolio Equity ($)', color='green')
+            ax1_twin.tick_params(axis='y', labelcolor='green')
+            
+            # Overlay buy and sell signals
+            buy_signals = results_df[results_df['Signal'] == 1]
+            sell_signals = results_df[results_df['Signal'] == -1]
+            ax1.scatter(buy_signals.index, buy_signals['close'], color='green', marker='^', s=100, label='Buy')
+            ax1.scatter(sell_signals.index, sell_signals['close'], color='red', marker='v', s=100, label='Sell')
+            
+            # Plot drawdown
+            ax2 = axes[1]
+            ax2.fill_between(results_df.index, 0, results_df['Drawdown'] * 100, color='red', alpha=0.3)
+            ax2.set_ylabel('Drawdown (%)')
+            ax2.set_ylim(results_df['Drawdown'].min() * 100 * 1.1, 5)
+            
+            # Plot signal strength
+            ax3 = axes[2]
+            ax3.fill_between(results_df.index, 0, results_df['long_strength'] * 100, color='green', alpha=0.3, label='Long Strength')
+            ax3.fill_between(results_df.index, 0, results_df['short_strength'] * 100, color='red', alpha=0.3, label='Short Strength')
+            ax3.set_ylabel('Signal Strength (%)')
+            ax3.set_ylim(-100, 100)
+            ax3.legend()
+            
+            # Format dates
+            for ax in axes:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+                ax.grid(True, alpha=0.3)
+            
+            # Set figure title
+            fig.suptitle('BlendedCryptoTrader Backtest Results', fontsize=16)
+            plt.tight_layout()
+            fig.subplots_adjust(top=0.95)
+            
+            return fig
+        
+        except ImportError:
+            print("Matplotlib is required for plotting. Install with 'pip install matplotlib'")
+            return None
+    
+    def run_live_trading(self, api_key, api_secret, timeframe='4h', symbol='BTCUSDT', risk_per_trade=0.02, max_history=500):
+        """
+        Run the strategy for live trading.
+        
+        Parameters:
+        - api_key: Exchange API key
+        - api_secret: Exchange API secret
+        - timeframe: Trading timeframe (e.g., '1h', '4h', '1d')
+        - symbol: Trading pair
+        - risk_per_trade: Maximum risk per trade as fraction of account
+        - max_history: Maximum number of historical candles to retrieve
+        
+        Returns:
+        - Current signal and position information
+        """
+        # Initialize API client
+        try:
+            client = Client(api_key=api_key, api_secret=api_secret)
+            print(f"Connected to exchange API for {symbol} trading")
+        except Exception as e:
+            print(f"Error connecting to exchange API: {str(e)}")
+            return None
+        
+        # Get historical data
+        try:
+            candles = client.get_historical_klines(
+                symbol=symbol,
+                interval=timeframe,
+                limit=max_history
+            )
+            
+            # Convert to dataframe
+            df = pd.DataFrame(candles, columns=[
+                'datetime', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            
+            # Format data
+            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = df[col].astype(float)
+                
+            # Save to CSV file for the strategy
+            temp_file = f"temp_{symbol}_{timeframe}.csv"
+            df.to_csv(temp_file, index=False)
+            print(f"Retrieved {len(df)} candles for {symbol}")
+            
+            # Initialize strategy with this data
+            self.data_path = temp_file
+            signals_df = self.generate_signals()
+            
+            # Get current signal
+            current_signal = signals_df['Signal'].iloc[-1]
+            
+            # Get account information
+            account_info = client.get_account()
+            account_balance = float(next(item['free'] for item in account_info['balances'] if item['asset'] == 'USDT'))
+            
+            # Determine position size based on risk
+            current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+            position_size = (account_balance * risk_per_trade) / current_price
+            
+            # Current recommendations
+            signal_names = {1: "BUY", 0: "NEUTRAL", -1: "SELL"}
+            signal_strength = signals_df['long_strength'].iloc[-1] if current_signal == 1 else \
+                              abs(signals_df['short_strength'].iloc[-1]) if current_signal == -1 else 0
+            
+            recommendation = {
+                'timestamp': pd.Timestamp.now(),
+                'symbol': symbol,
+                'price': current_price,
+                'signal': signal_names[current_signal],
+                'signal_strength': f"{signal_strength:.2%}",
+                'recommended_position': f"{position_size:.5f} {symbol.replace('USDT', '')}",
+                'account_balance': f"{account_balance:.2f} USDT"
+            }
+            
+            # Clean up temp file
+            import os
+            os.remove(temp_file)
+            
+            return recommendation
+            
+        except Exception as e:
+            print(f"Error in live trading: {str(e)}")
+            return None
